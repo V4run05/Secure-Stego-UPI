@@ -1,0 +1,23 @@
+# Dataset — too large for GitHub
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+*.egg-info/
+
+# Training outputs — regenerated each run
+logs/
+
+# Database — generated at runtime
+*.db
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db

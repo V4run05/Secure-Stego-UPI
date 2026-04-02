@@ -1,0 +1,22 @@
+# ── Core GAN stack ────────────────────────────────────────────────────────────
+torch>=2.0.0
+torchvision>=0.15.0
+Pillow>=10.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+tqdm>=4.65.0
+
+# ── Cryptography ──────────────────────────────────────────────────────────────
+pycryptodome>=3.19.0       # AES-128-CBC  (provides Crypto.Cipher)
+bcrypt>=4.0.0              # PIN hashing
+
+# ── Face authentication ───────────────────────────────────────────────────────
+# deepface>=0.0.79         # Uncomment after confirming GPU/CPU works.
+#                          # DeepFace pulls in tensorflow or torch — large install.
+#                          # Without it, face auth runs in mock mode (always passes).
+#                          # Install separately: pip install deepface
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+# pytorch-fid>=0.3.0       # Uncomment for Phase 5 FID evaluation only.
+#                          # Install separately: pip install pytorch-fid
+scipy>=1.10.0
