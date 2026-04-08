@@ -664,7 +664,9 @@ python -c "from core.evaluate import compute_fid_score; print(compute_fid_score(
 | Name             | Role                                            | RegNo     |
 | ---------------- | ----------------------------------------------- | --------- |
 | Varun R Panicker | GAN steganography, cryptographic layer, backend | 23BAI1350 |
-| Kailash Murali T | UPI authentication design, frontend             | 23BAI1427 |
+|                  | dev                                             |           |
+| Kailash Murali T | Core design, frontend dev, back-end front end   | 23BAI1427 |
+|                  | integration                                     |           |
 
 **Course:** Cryptography and Network Security — VIT Chennai
 
