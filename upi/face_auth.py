@@ -98,7 +98,7 @@ def check_liveness(image_b64: str) -> LivenessResult:
         if not variances:
             return LivenessResult(False, 0.0, "Image too small for liveness check")
         mean_var  = float(np.mean(variances))
-        is_live   = mean_var >= 150.0
+        is_live   = mean_var >= 25.0
         return LivenessResult(
             is_live = is_live,
             score   = round(min(1.0, mean_var / 500.0), 3),
