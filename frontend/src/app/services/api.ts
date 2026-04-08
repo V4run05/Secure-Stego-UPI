@@ -21,16 +21,47 @@ async function request<T>(
       headers: { "Content-Type": "application/json", ...options.headers },
       signal: options.signal ?? abortSignal(),
     });
-    const json = await res.json();
-    if (!res.ok) {
+
+    // Read body as text first — res.json() throws on empty bodies
+    const text = await res.text();
+
+    if (!text.trim()) {
       return {
         success: false,
-        error: json.reason ?? json.error ?? `HTTP ${res.status}`,
+        error: res.ok
+          ? `Server returned an empty response (HTTP ${res.status})`
+          : `Server error (HTTP ${res.status}) — backend may be unavailable`,
+      };
+    }
+
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return {
+        success: false,
+        error: `Invalid response from server: ${text.slice(0, 120)}`,
+      };
+    }
+
+    if (!res.ok) {
+      const errorData = json as Record<string, unknown>;
+      return {
+        success: false,
+        error: (
+          (errorData.reason as string) ??
+          (errorData.error as string) ??
+          `HTTP ${res.status}`
+        ),
         details: json,
       };
     }
+
     return { success: true, data: json as T };
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return { success: false, error: "Request timed out — backend may be offline" };
+    }
     return {
       success: false,
       error: err instanceof Error ? err.message : "Network error",

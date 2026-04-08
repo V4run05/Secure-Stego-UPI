@@ -1,0 +1,135 @@
+Now I have a complete picture. Let me provide you with a precise prompt to fix these issues:
+
+---
+
+## Prompt to Fix JSON Parsing and Backend Errors
+
+**Fix the "Failed to execute 'json' on 'Response': Unexpected end of JSON input" error occurring in registration and face verification flows.**
+
+### Root Cause Analysis
+
+The error occurs when the frontend receives an empty response or the connection drops before the response completes. This happens in two scenarios shown in the screenshots:
+1. **Registration flow** (Step 4: Review & Register)  
+2. **Face verification flow** (Capture Photo → initiateTransaction)
+
+### Required Fixes
+
+#### 1. `run_backend.py` - Add try-catch wrappers to prevent crashes
+
+The Flask routes call `get_api()` methods directly. If any exception is raised (e.g., database errors, model inference failures, missing dependencies), Flask may return an empty response or drop the connection.
+
+**Fix all route handlers with proper exception handling:**
+
+```python
+@app.route("/auth/register", methods=["POST"])
+def register():
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"success": False, "reason": "No JSON body"}), 400
+        user_id        = data.get("user_id", "").strip()
+        face_image_b64 = data.get("face_image_b64", "")
+        pin            = data.get("pin", "")
+        if not user_id or not pin:
+            return jsonify({"success": False, "reason": "user_id and pin are required"}), 400
+        result = get_api().register_user(user_id, face_image_b64, pin)
+        status = 200 if result.get("success") else 400
+        return jsonify(result), status
+    except Exception as e:
+        logger.exception("Register endpoint error")
+        return jsonify({"success": False, "reason": f"Server error: {str(e)}"}), 500
+```
+
+Apply the same pattern to `/transaction/initiate` and `/transaction/verify` routes.
+
+#### 2. `run_backend.py` - Fix potential lazy API loading issues
+
+The `_api` global may fail to initialize properly. Add explicit error handling:
+
+```python
+def get_api() -> SecureStegoUPI:
+    global _api
+    if _api is None:
+        try:
+            _api = _load_api()
+        except Exception as e:
+            logger.exception("Failed to load API")
+            raise RuntimeError(f"Backend initialization failed: {e}")
+    return _api
+```
+
+#### 3. `frontend/src/app/services/api.ts` - Handle empty responses gracefully
+
+The frontend's `request()` function calls `res.json()` unconditionally. If the response body is empty, this throws the observed error.
+
+**Fix the request function:**
+
+```typescript
+async function request<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<{ success: true; data: T } | { success: false; error: string; details?: unknown }> {
+  try {
+    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers: { "Content-Type": "application/json", ...options.headers },
+      signal: options.signal ?? abortSignal(),
+    });
+    
+    // Handle empty responses
+    const text = await res.text();
+    if (!text) {
+      return {
+        success: false,
+        error: `Empty response from server (HTTP ${res.status})`,
+      };
+    }
+    
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return {
+        success: false,
+        error: `Invalid JSON response: ${text.slice(0, 100)}`,
+      };
+    }
+    
+    if (!res.ok) {
+      const errorData = json as Record<string, unknown>;
+      return {
+        success: false,
+        error: (errorData.reason ?? errorData.error ?? `HTTP ${res.status}`) as string,
+        details: json,
+      };
+    }
+    return { success: true, data: json as T };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Network error",
+    };
+  }
+}
+```
+
+#### 4. Check if backend is actually running
+
+The Vite dev server proxies `/api/*` to `localhost:8000`. If the backend isn't running, fetch fails with empty response.
+
+**In `frontend/vite.config.ts`, verify proxy config exists and add error handling.**
+
+### Files to Modify
+
+1. **`run_backend.py`** - Wrap all route handlers in try-except, return proper JSON for all error cases
+2. **`frontend/src/app/services/api.ts`** - Parse response text first, then JSON, handle empty/malformed responses
+3. **`frontend/vite.config.ts`** - Verify proxy configuration to `localhost:8000`
+
+### Testing
+
+After fixes:
+1. Start backend: `python run_backend.py`
+2. Start frontend: `cd frontend && npm run dev`
+3. Test registration flow end-to-end
+4. Test transaction initiation with face capture
+5. Verify all error cases return readable error messages
