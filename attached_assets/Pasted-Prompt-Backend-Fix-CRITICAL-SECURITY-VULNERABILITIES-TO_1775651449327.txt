@@ -1,0 +1,258 @@
+Prompt - Backend Fix
+
+# **CRITICAL SECURITY VULNERABILITIES TO ADDRESS**
+
+### **Priority 1: Client-Side Encryption Before Transit**
+
+**Current Issue:** User details and transaction data are suspected to be sent in plaintext/unhashed format to the backend, where they are then encrypted.
+
+**Required Changes:**
+
+1. **Implement Client-Side Hashing & Encryption**
+   - Hash sensitive user credentials (passwords, PINs) using bcrypt/scrypt/Argon2 **before** sending to backend
+   - Encrypt transaction details using AES-256-GCM on the client side before transmission
+   - Use a hybrid encryption approach: Generate ephemeral session keys for each transaction
+   
+2. **Key Exchange Protocol**
+   - Implement proper key exchange (e.g., ECDH - Elliptic Curve Diffie-Hellman)
+   - Generate client-side public/private key pairs
+   - Exchange public keys securely and derive shared secrets for symmetric encryption
+   
+3. **Specific Implementation Steps:**
+   ```
+   CLI Client Flow:
+    User enters credentials
+    Hash password with salt (SHA-256 + salt minimum, prefer Argon2)
+    Encrypt hashed password with backend's public key
+    Send encrypted payload over HTTPS/TLS
+    Backend decrypts and verifies (never receives plaintext)
+   
+   Transaction Flow:
+    User enters transaction details (amount, recipient, etc.)
+    Generate transaction nonce/timestamp
+    Encrypt transaction data with session key (AES-256-GCM)
+    Sign encrypted data with user's private key
+    Send encrypted + signed payload
+    Backend verifies signature and decrypts
+   ```
+
+---
+
+### **Priority 2: Enforce TLS/SSL for All Transit**
+
+**Required Changes:**
+
+1. **Mandatory HTTPS/TLS 1.3**
+   - Enforce TLS 1.3 minimum (disable TLS 1.0, 1.1, 1.2 if possible)
+   - Implement certificate pinning in CLI agent
+   - Reject any non-HTTPS connections
+   
+2. **mTLS (Mutual TLS) for Enhanced Security**
+   - Implement mutual authentication where both client and server verify certificates
+   - CLI agent should present client certificates
+   
+3. **Code Changes:**
+   - Update all HTTP requests to use HTTPS
+   - Add certificate validation
+   - Implement connection security checks before transmitting data
+
+---
+
+### **Priority 3: Steganography Image Generation & Usage**
+
+**Current Issue:** Backend-generated stego image allegedly not being used by frontend for dynamic PIN generation.
+
+**Required Architecture:**
+
+1. **Backend Stego Image Generation Flow:**
+   ```
+   Backend:
+    Generate cryptographically secure random seed
+    Embed encrypted transaction data + seed in image (LSB steganography)
+    Apply additional encryption layer to stego image
+    Send stego image to client
+    Store hash of stego image (not the image itself)
+   ```
+
+2. **Frontend Dynamic PIN Generation Flow:**
+   ```
+   CLI Frontend:
+    Receive stego image from backend
+    Verify image integrity (check hash/signature)
+    Extract embedded data from stego image
+    Decrypt embedded seed
+    Use seed + user secret to generate dynamic PIN
+    Display PIN to user for transaction authorization
+    Send PIN back to backend for verification
+   ```
+
+3. **Validation Points:**
+   - Backend must verify that the PIN matches the seed embedded in the stego image
+   - Implement time-based expiration (PIN valid for 60-120 seconds only)
+   - Track used stego images to prevent replay attacks
+
+---
+
+## **ADDITIONAL SECURITY ENHANCEMENTS**
+
+### **1. Input Validation & Sanitization**
+- Validate all user inputs on client side AND server side
+- Prevent SQL injection, command injection, path traversal
+- Implement strict input length limits and format validation
+
+### **2. Rate Limiting & Brute Force Protection**
+- Implement exponential backoff for failed authentication attempts
+- Lock accounts after N failed attempts (e.g., 5 attempts)
+- Add CAPTCHA or challenge-response after suspicious activity
+
+### **3. Secure Session Management**
+- Generate cryptographically secure session tokens
+- Implement token rotation (refresh tokens)
+- Session timeout after inactivity (5-15 minutes)
+- Invalidate sessions on logout and password change
+
+### **4. Audit Logging & Monitoring**
+- Log all authentication attempts (success and failure)
+- Log all transactions with timestamps
+- Never log sensitive data (passwords, PINs, full account numbers)
+- Implement anomaly detection for unusual patterns
+
+### **5. Zero-Knowledge Architecture**
+- Backend should never have access to user's plaintext credentials
+- Implement zero-knowledge proofs where possible
+- Use client-side derivation for encryption keys
+
+### **6. Secure Key Storage**
+- Use OS keychain/credential manager for storing keys (Linux: secret-service, macOS: Keychain, Windows: Credential Manager)
+- Never store keys in plaintext files or environment variables
+- Implement key rotation policy
+
+### **7. Code Obfuscation & Anti-Tampering**
+- Obfuscate CLI agent code to prevent reverse engineering
+- Implement integrity checks (code signing)
+- Detect and prevent debugging/instrumentation
+
+### **8. Dependency Security**
+- Audit all third-party dependencies for vulnerabilities
+- Pin dependency versions
+- Regularly update to patched versions
+- Use tools like `pip-audit` or `safety` for Python
+
+### **9. Error Handling**
+- Never expose sensitive information in error messages
+- Use generic error messages for authentication failures
+- Log detailed errors server-side only
+
+### **10. Multi-Factor Authentication (MFA)**
+- Implement TOTP (Time-based One-Time Password) support
+- Support hardware keys (FIDO2/WebAuthn)
+- SMS/Email OTP as fallback (less secure but better than nothing)
+
+---
+
+## **IMPLEMENTATION CHECKLIST**
+
+### Phase 1: Critical Security Fixes
+- [ ] Implement client-side password hashing before transmission
+- [ ] Implement client-side transaction data encryption
+- [ ] Enforce HTTPS/TLS for all connections
+- [ ] Fix stego image generation and usage flow
+- [ ] Verify frontend uses backend stego image for PIN generation
+
+### Phase 2: Enhanced Security
+- [ ] Implement certificate pinning
+- [ ] Add mutual TLS authentication
+- [ ] Implement secure session management
+- [ ] Add rate limiting and brute force protection
+- [ ] Implement audit logging
+
+### Phase 3: Hardening
+- [ ] Add MFA support
+- [ ] Implement secure key storage using OS keychains
+- [ ] Add code signing and integrity checks
+- [ ] Perform security audit and penetration testing
+- [ ] Implement anomaly detection
+
+---
+
+## **TESTING & VALIDATION**
+
+1. **Security Testing:**
+   - Perform man-in-the-middle (MITM) attack simulation
+   - Verify no plaintext credentials in network traffic (use Wireshark)
+   - Test replay attack prevention
+   - Validate encryption algorithms and key strengths
+
+2. **Functional Testing:**
+   - Verify stego image is generated correctly
+   - Confirm frontend extracts and uses stego data for PIN generation
+   - Test PIN expiration and validation
+   - Verify transaction flow end-to-end
+
+3. **Compliance:**
+   - Ensure compliance with PCI-DSS for payment systems
+   - Follow OWASP Top 10 security guidelines
+   - Consider GDPR requirements for data protection
+
+---
+
+## **ARCHITECTURE DIAGRAM (Secure Flow)**
+
+```
+
+                     CLI AGENT (CLIENT)                       
+
+ 1. User Input  Hash Password (Argon2)                      
+ 2. Encrypt Credentials (AES-256-GCM + Client Private Key)   
+ 3. Encrypt Transaction Data (Session Key)                   
+ 4. Send over HTTPS/TLS 1.3 with Certificate Pinning         
+â”¬â”˜
+                          Encrypted Payload
+                        
+
+                   BACKEND SERVER (API)                       
+
+ 1. Receive Encrypted Payload over TLS                       
+ 2. Decrypt using Server Private Key                         
+ 3. Verify Hashed Credentials (never see plaintext)          
+ 4. Generate Stego Image with Embedded Transaction Seed      
+ 5. Encrypt Stego Image                                      
+ 6. Send Stego Image to Client                               
+
+                          Encrypted Stego Image
+                
+
+                     CLI AGENT (CLIENT)                       
+
+ 1. Receive & Verify Stego Image Integrity                   
+ 2. Extract Embedded Seed from Stego Image                   
+ 3. Generate Dynamic PIN using Seed + User Secret            
+ 4. Display PIN to User                                      
+ 5. User Enters PIN                                          
+ 6. Send Encrypted PIN to Backend                            
+
+                          Encrypted PIN
+                        
+
+                   BACKEND SERVER (API)                       
+
+ 1. Verify PIN matches Stego Image Seed                      
+ 2. Check PIN not expired (time-based)                       
+ 3. Verify no replay attack (mark stego image as used)       
+ 4. Process Transaction                                      
+ 5. Return Success/Failure (encrypted)                       
+
+```
+
+---
+
+## **SUMMARY**
+
+This comprehensive security modification ensures:
+1.  **No plaintext credentials or transaction data in transit** (client-side encryption)
+2.  **All data encrypted before leaving client** (defense in depth)
+3.  **Backend stego image properly used by frontend** (verified PIN generation flow)
+4.  **Multiple layers of security** (encryption, authentication, validation, monitoring)
+5.  **Protection against common attacks** (replay, MITM, brute force, injection)
+
+Implement these changes systematically, starting with Priority 1 items, and conduct thorough security testing at each phase.

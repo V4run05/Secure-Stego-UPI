@@ -1,0 +1,720 @@
+Prompt Integration
+
+### **Part 1: Understanding the Architecture**
+
+**What you need to know:**
+
+The project has 3 layers of authentication:
+
+1. **Face Authentication** (Layer 1) — Backend verifies your face
+2. **Dynamic PIN Challenge** (Layer 2) — Backend generates hidden PIN positions from encrypted data
+3. **Transaction Authorization** (Layer 3) — Backend confirms the PIN and executes the transaction
+
+**The Flow:**
+```
+Frontend UI → HTTP Request → Python Backend (api.py) → Response → Frontend Updates UI
+```
+
+**The Backend Exposes 4 Endpoints:**
+- `POST /health` — Check if backend is alive
+- `POST /auth/register` — Create account with face + PIN
+- `POST /transaction/initiate` — Start payment (generates stego image)
+- `POST /transaction/verify` — Confirm PIN and complete payment
+
+---
+
+### **Part 2: Create an API Service Layer (Best Practice)**
+
+The key to clean integration is creating a **service file** that handles all backend communication. This keeps your components clean and your API logic in one place.
+
+**File to create:** `frontend/src/app/services/api.ts`
+
+```typescript
+/**
+ * API Service Layer
+ * All backend communication happens here.
+ * This is your "translator" between frontend and backend.
+ */
+
+// Configuration
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
+// Types for better code safety
+interface RegisterPayload {
+  user_id: string;
+  face_image_b64: string;
+  pin: string;
+}
+
+interface InitiateTransactionPayload {
+  user_id: string;
+  face_image_b64: string;
+  amount_rupees: number;
+  recipient_upi: string;
+}
+
+interface VerifyTransactionPayload {
+  tx_id: string;
+  pin_digits: Record<string, string>; // e.g., {"1": "4", "3": "7", "5": "2"}
+}
+
+interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  details?: any;
+}
+
+// Timeout helper - prevents hanging requests
+function createAbortSignal(timeoutMs = 30000) {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeoutMs);
+  return controller.signal;
+}
+
+// Main API client
+export const apiClient = {
+  /**
+   * Check if backend is running
+   * Use this as a "heartbeat" to verify connectivity
+   */
+  async checkHealth() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/health`, {
+        method: "GET",
+        signal: createAbortSignal(5000), // Short timeout for health check
+      });
+
+      if (!response.ok) {
+        throw new Error(`Health check failed: ${response.status}`);
+      }
+
+      return {
+        success: true,
+        data: await response.json(),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Health check failed",
+      };
+    }
+  },
+
+  /**
+   * Register a new user with face and PIN
+   * This is called during account setup
+   */
+  async register(payload: RegisterPayload) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: createAbortSignal(),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: data.reason || "Registration failed",
+          details: data,
+        };
+      }
+
+      return { success: true, data };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Network error during registration",
+      };
+    }
+  },
+
+  /**
+   * Initiate a transaction (Step 1 of payment)
+   * Returns: stego_image_b64, pin positions, and transaction ID
+   */
+  async initiateTransaction(payload: InitiateTransactionPayload) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/transaction/initiate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: createAbortSignal(),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: data.error || "Failed to initiate transaction",
+          attempts_remaining: data.attempts_remaining,
+          details: data,
+        };
+      }
+
+      return { success: true, data };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Network error",
+      };
+    }
+  },
+
+  /**
+   * Verify PIN (Step 2 of payment)
+   * This completes the transaction if PIN is correct
+   */
+  async verifyTransaction(payload: VerifyTransactionPayload) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/transaction/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: createAbortSignal(),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: data.reason || "PIN verification failed",
+          attempts_remaining: data.attempts_remaining,
+          details: data,
+        };
+      }
+
+      return { success: true, data };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Network error",
+      };
+    }
+  },
+};
+```
+
+---
+
+### **Part 3: Create Hooks for Common Tasks**
+
+Hooks let you reuse logic across components. Create: `frontend/src/app/hooks/useBackendCall.ts`
+
+```typescript
+/**
+ * Custom React Hook for Backend Calls
+ * Handles loading, errors, and retries automatically
+ */
+
+import { useState, useCallback } from "react";
+
+interface UseBackendCallOptions {
+  maxRetries?: number;
+  onError?: (error: string) => void;
+  onSuccess?: (data: any) => void;
+}
+
+export function useBackendCall(
+  apiFunction: (...args: any[]) => Promise<any>,
+  options: UseBackendCallOptions = {}
+) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<any>(null);
+  const [retryCount, setRetryCount] = useState(0);
+
+  const { maxRetries = 2, onError, onSuccess } = options;
+
+  const execute = useCallback(
+    async (...args: any[]) => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const result = await apiFunction(...args);
+
+        if (result.success) {
+          setData(result.data);
+          onSuccess?.(result.data);
+        } else {
+          throw new Error(result.error || "Unknown error");
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Unknown error";
+
+        // Automatic retry logic
+        if (retryCount < maxRetries) {
+          setRetryCount(retryCount + 1);
+          // Wait before retrying (exponential backoff)
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.pow(2, retryCount) * 1000)
+          );
+          return execute(...args);
+        }
+
+        setError(errorMessage);
+        onError?.(errorMessage);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [apiFunction, maxRetries, retryCount, onError, onSuccess]
+  );
+
+  const reset = useCallback(() => {
+    setError(null);
+    setData(null);
+    setRetryCount(0);
+  }, []);
+
+  return { loading, error, data, execute, reset };
+}
+```
+
+---
+
+### **Part 4: Integrate into Components with Fallbacks**
+
+Now modify your components to use the API. Here's the **InitiateTransaction** component as an example:
+
+**File: InitiateTransaction.tsx**
+
+```typescript
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router";
+import { Shield, ChevronRight, AlertCircle } from "lucide-react";
+import { apiClient } from "../services/api";
+import { useBackendCall } from "../hooks/useBackendCall";
+
+export function InitiateTransaction() {
+  const navigate = useNavigate();
+  const [amount, setAmount] = useState("");
+  const [selectedPayee, setSelectedPayee] = useState("");
+  const [backendAvailable, setBackendAvailable] = useState(true);
+  const [cameraActive, setCameraActive] = useState(false);
+
+  // Hook for initiating transaction
+  const {
+    loading: initiating,
+    error: initiateError,
+    execute: initiateTransaction,
+  } = useBackendCall(apiClient.initiateTransaction, {
+    maxRetries: 2,
+    onError: (err) => {
+      console.error("Transaction initiation failed:", err);
+      // Fallback: Continue with demo mode
+      setBackendAvailable(false);
+    },
+  });
+
+  // Check backend health on mount
+  useEffect(() => {
+    const checkBackend = async () => {
+      const health = await apiClient.checkHealth();
+      setBackendAvailable(health.success);
+    };
+
+    checkBackend();
+  }, []);
+
+  // Hook for capturing face image
+  const handleCaptureFacePhoto = async () => {
+    try {
+      // TODO: Integrate actual camera library (e.g., react-webcam)
+      // For now, create a placeholder
+      const faceImageB64 = await captureFaceImage();
+
+      if (!faceImageB64) {
+        alert("Failed to capture face image");
+        return;
+      }
+
+      // Attempt to call backend
+      if (backendAvailable) {
+        const result = await initiateTransaction({
+          user_id: "current_user", // Get from auth context (TODO)
+          face_image_b64: faceImageB64,
+          amount_rupees: parseFloat(amount),
+          recipient_upi: selectedPayee,
+        });
+
+        if (result.success) {
+          // Store transaction data for next step
+          sessionStorage.setItem(
+            "transaction",
+            JSON.stringify({
+              tx_id: result.data.tx_id,
+              stego_image: result.data.stego_image_b64,
+              pin_positions: result.data.pin_positions,
+              amount: result.data.amount_rupees,
+              recipient: result.data.recipient_upi,
+            })
+          );
+
+          navigate("/verify-pin");
+        } else {
+          alert(`Transaction failed: ${result.error}`);
+        }
+      } else {
+        // FALLBACK MODE: Demo/offline mode
+        console.warn("Backend unavailable - using fallback demo mode");
+        sessionStorage.setItem(
+          "transaction",
+          JSON.stringify({
+            tx_id: "demo_" + Date.now(),
+            stego_image: "data:image/png;base64,...", // Placeholder
+            pin_positions: [1, 3, 5], // Demo positions
+            amount: parseFloat(amount),
+            recipient: selectedPayee,
+            isDemoMode: true,
+          })
+        );
+        navigate("/verify-pin");
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      alert("An error occurred. Please try again.");
+    }
+  };
+
+  const payees = [
+    { id: "1", name: "Sarah Johnson", upiId: "sarah@upi" },
+    { id: "2", name: "Michael Chen", upiId: "michael@upi" },
+    { id: "3", name: "Priya Sharma", upiId: "priya@upi" },
+    { id: "4", name: "James Wilson", upiId: "james@upi" },
+  ];
+
+  const isFormValid = amount && selectedPayee;
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        {/* Status Indicator */}
+        <div className="mb-4 text-center">
+          <div
+            className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
+              backendAvailable
+                ? "bg-emerald-500/20 text-emerald-400"
+                : "bg-yellow-500/20 text-yellow-400"
+            }`}
+          >
+            {backendAvailable
+              ? "✓ Backend Connected"
+              : "⚠ Running in Demo Mode"}
+          </div>
+        </div>
+
+        {/* Error Alert */}
+        {initiateError && (
+          <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/50 flex gap-2">
+            <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm text-red-300 font-medium">Error</p>
+              <p className="text-xs text-red-200">{initiateError}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 mb-4">
+            <Shield className="w-8 h-8" />
+          </div>
+          <h1 className="text-3xl mb-2">SecureUPI</h1>
+          <p className="text-slate-400 text-sm">Next-gen secure payments</p>
+        </div>
+
+        {/* Main Card */}
+        <div className="bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-800">
+          {/* Amount Input */}
+          <div className="mb-6">
+            <label className="text-slate-400 text-sm mb-2 block">
+              Enter Amount (₹)
+            </label>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.00"
+              className="w-full bg-slate-800 border border-slate-700 rounded-2xl px-4 py-4 text-2xl text-white"
+            />
+          </div>
+
+          {/* Payee Selection */}
+          <div className="mb-6">
+            <label className="text-slate-400 text-sm mb-3 block">
+              Select Payee
+            </label>
+            <div className="space-y-2">
+              {payees.map((payee) => (
+                <button
+                  key={payee.id}
+                  onClick={() => setSelectedPayee(payee.id)}
+                  className={`w-full p-4 rounded-xl text-left ${
+                    selectedPayee === payee.id
+                      ? "bg-blue-500/20 border-2 border-blue-500"
+                      : "bg-slate-800 border-2 border-slate-700"
+                  }`}
+                >
+                  <p className="font-medium">{payee.name}</p>
+                  <p className="text-sm text-slate-400">{payee.upiId}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Action Button */}
+          <button
+            onClick={handleCaptureFacePhoto}
+            disabled={!isFormValid || initiating}
+            className={`w-full py-3 rounded-xl font-semibold flex items-center justify-center gap-2 ${
+              isFormValid && !initiating
+                ? "bg-gradient-to-r from-blue-500 to-emerald-500 hover:shadow-lg"
+                : "bg-slate-700 text-slate-500 cursor-not-allowed"
+            }`}
+          >
+            {initiating ? (
+              <>
+                <span className="animate-spin">⏳</span> Processing...
+              </>
+            ) : (
+              <>
+                {cameraActive ? "Verify Face" : "Capture Face"}
+                <ChevronRight className="w-5 h-5" />
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Placeholder: Replace with actual camera capture
+async function captureFaceImage(): Promise<string | null> {
+  // TODO: Implement react-webcam integration
+  return null;
+}
+```
+
+---
+
+### **Part 5: Handle Environment Configuration**
+
+Create: `frontend/.env.local` (don't commit this!)
+
+```
+VITE_API_URL=http://localhost:5000
+VITE_APP_MODE=development
+```
+
+For production, change it to your deployed backend URL.
+
+---
+
+### **Part 6: Error Handling & Fallback Strategy**
+
+**Common scenarios and how to handle them:**
+
+| Scenario | What Happens | Fallback |
+|----------|--------------|----------|
+| Backend down | `apiClient` returns `success: false` | Show demo mode, use offline UI |
+| Network timeout | `fetch` aborts after 30s | Retry up to 2 times, then error |
+| Invalid face image | Backend rejects in `face_auth.py` | Show camera retry message |
+| Incorrect PIN | Backend returns `attempts_remaining` | Show remaining attempts |
+| Network flaky | Request sometimes succeeds | Retry with exponential backoff |
+
+**Generic error boundary component:**
+
+Create: `frontend/src/app/components/ErrorBoundary.tsx`
+
+```typescript
+import { ReactNode, Component } from "react";
+import { AlertCircle } from "lucide-react";
+
+interface Props {
+  children: ReactNode;
+}
+
+interface State {
+  hasError: boolean;
+  error: string;
+}
+
+export class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
+    super(props);
+    this.state = { hasError: false, error: "" };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error("Error caught:", error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-red-950 text-white flex items-center justify-center p-4">
+          <div className="text-center">
+            <AlertCircle className="w-16 h-16 mx-auto mb-4 text-red-400" />
+            <h1 className="text-2xl mb-2">Something went wrong</h1>
+            <p className="text-red-200 mb-4">{this.state.error}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded"
+            >
+              Reload Page
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+```
+
+---
+
+### **Part 7: Backend Server Setup (Python)**
+
+Create: `run_backend.py` in the root directory
+
+```python
+"""
+Simple Flask wrapper to expose the API
+"""
+import os
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+from api import SecureStegoUPI
+
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)  # Enable frontend to call from different origin
+
+# Load the API (use untrained mode for development)
+try:
+    api = SecureStegoUPI.from_checkpoint("checkpoints/checkpoint_final.pt")
+except:
+    print("⚠️ Checkpoint not found - using untrained mode")
+    api = SecureStegoUPI.untrained()
+
+# ── Routes ──────────────────────────────────────────────────────────────
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Check if backend is alive"""
+    return jsonify(api.health())
+
+@app.route("/auth/register", methods=["POST"])
+def register():
+    """Register user with face + PIN"""
+    data = request.json
+    result = api.register_user(
+        user_id=data.get("user_id"),
+        face_image_b64=data.get("face_image_b64"),
+        pin=data.get("pin")
+    )
+    return jsonify(result), 200 if result.get("success") else 400
+
+@app.route("/transaction/initiate", methods=["POST"])
+def initiate():
+    """Start a transaction"""
+    data = request.json
+    result = api.initiate_transaction(
+        user_id=data.get("user_id"),
+        face_image_b64=data.get("face_image_b64"),
+        amount_rupees=data.get("amount_rupees"),
+        recipient_upi=data.get("recipient_upi")
+    )
+    return jsonify(result), 200 if result.get("tx_id") else 400
+
+@app.route("/transaction/verify", methods=["POST"])
+def verify():
+    """Verify PIN and complete transaction"""
+    data = request.json
+    result = api.verify_transaction(
+        tx_id=data.get("tx_id"),
+        pin_digits=data.get("pin_digits")
+    )
+    return jsonify(result), 200 if result.get("authorized") else 400
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host="0.0.0.0", port=port)
+```
+
+**Install Flask:**
+```bash
+pip install flask flask-cors
+```
+
+**Run it:**
+```bash
+python run_backend.py
+```
+
+---
+
+### **Part 8: Step-by-Step Learning Path for the Intern**
+
+**Week 1:**
+1. Understand the architecture diagram
+2. Read the api.py docstring
+3. Create the API service (api.ts)
+4. Test `/health` endpoint manually with `curl`
+
+**Week 2:**
+1. Create the `useBackendCall` hook
+2. Integrate it into one component (InitiateTransaction)
+3. Handle basic errors and loading states
+4. Test with the backend running
+
+**Week 3:**
+1. Add fallback/demo mode
+2. Integrate the other components (Face, PIN, Success)
+3. Test error scenarios (turn off backend, slow network)
+4. Add error boundaries
+
+**Week 4:**
+1. Add camera integration (use `react-webcam`)
+2. Add retry logic
+3. Test end-to-end
+4. Deploy frontend + backend
+
+---
+
+### **Part 9: Testing Your Integration**
+
+```bash
+# Terminal 1: Start backend
+cd /workspaces/Secure-Stego-UPI
+python run_backend.py
+
+# Terminal 2: Start frontend
+cd /workspaces/Secure-Stego-UPI/frontend
+npm install
+npm run dev
+
+# Terminal 3: Test the API
+curl -X GET http://localhost:5000/health
+```
+
+---
+
+
+This structure is production-ready and teaches best practices! 🚀

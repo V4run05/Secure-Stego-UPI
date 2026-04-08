@@ -1,0 +1,902 @@
+Prompt FrontEnd
+
+# **Frontend Enhancement Prompt for Junior Developer**
+
+---
+
+## **PROJECT: Secure-Stego-UPI Frontend Improvements**
+
+**Current State:** The frontend (`/frontend`) is a React + TypeScript app with basic UI mockups but missing critical functionality:
+- ❌ No user registration/onboarding flow
+- ❌ No real camera integration (just animations)
+- ❌ No actual API calls to backend
+- ❌ Uses dummy hardcoded data
+- ❌ Stego images not used for PIN generation
+
+**Your Mission:** Transform this from a UI prototype into a fully functional, production-ready application.
+
+---
+
+## **📋 TASK 1: User Onboarding & Registration**
+
+### **Current Problem**
+`InitiateTransaction.tsx` lines 10-15 show hardcoded dummy users:
+```typescript
+const payees = [
+  { id: "1", name: "Sarah Johnson", upiId: "sarah@upi" },
+  { id: "2", name: "Michael Chen", upiId: "michael@upi" },
+  // ... hardcoded list
+];
+```
+
+### **What You Need to Build**
+
+#### **1.1 Create Registration Flow**
+
+**New Route:** `/register` (before the home screen)
+
+**File to Create:** `src/app/components/Registration.tsx`
+
+**Requirements:**
+```typescript
+interface RegistrationForm {
+  userId: string;          // UPI ID (validate format: xxx@upi)
+  fullName: string;        // Display name
+  pin: string;             // 4-6 digit PIN
+  pinConfirm: string;      // Confirm PIN (must match)
+  faceImage: string;       // Base64 from camera capture
+}
+```
+
+**UI Flow:**
+1. **Step 1: Enter UPI ID & Name**
+   - Input: UPI ID (e.g., `alice@upi`)
+   - Validation: Must end with `@upi`, no spaces, lowercase
+   - Input: Full name for display
+   
+2. **Step 2: Set PIN**
+   - Numeric keypad (like `PinVerification.tsx`)
+   - 4-6 digits allowed
+   - Show strength indicator
+   - Confirm PIN entry (must match)
+   - ❌ Do NOT show plaintext PIN (use dots/asterisks)
+   
+3. **Step 3: Face Capture**
+   - Request camera permission
+   - Live camera preview (640x480)
+   - Detect face in frame (use face detection library)
+   - Show face position guides (oval overlay)
+   - Button: "Capture Face"
+   - Show preview of captured image
+   - Button: "Retake" or "Continue"
+   
+4. **Step 4: Review & Submit**
+   - Show summary (UPI ID, name, PIN as dots)
+   - Button: "Register"
+   - Call backend API: `POST /auth/register`
+   - Show loading state during registration
+
+**Design Mockup:**
+```
+┌─────────────────────────────────────┐
+│  📷  Face Registration              │
+│                                     │
+│  ┌─────────────────────────────┐  │
+│  │     [Live Camera Feed]       │  │
+│  │                               │  │
+│  │     ╭───────────╮            │  │
+│  │     │  👤 Face  │  ← Guide  │  │
+│  │     ╰───────────╯            │  │
+│  └─────────────────────────────┘  │
+│                                     │
+│  Position your face in the oval    │
+│  [ Allow Camera Access ]            │
+│  [ Capture Photo ]                  │
+└─────────────────────────────────────┘
+```
+
+#### **1.2 Add "New User" Option**
+
+**File to Modify:** `src/app/components/InitiateTransaction.tsx`
+
+Add a button before the transaction form:
+```typescript
+<div className="mb-6">
+  <button 
+    onClick={() => navigate('/register')}
+    className="w-full bg-slate-800 border-2 border-dashed border-slate-600 
+               hover:border-blue-500 rounded-xl p-4 transition-all"
+  >
+    <div className="flex items-center justify-center gap-2">
+      <UserPlus className="w-5 h-5" />
+      <span>Register New Account</span>
+    </div>
+  </button>
+</div>
+```
+
+#### **1.3 Store Current User Context**
+
+Create a context provider to track the logged-in user:
+
+**File to Create:** `src/app/context/UserContext.tsx`
+
+```typescript
+interface User {
+  userId: string;
+  fullName: string;
+  isRegistered: boolean;
+}
+
+export const UserContext = createContext<{
+  user: User | null;
+  setUser: (user: User | null) => void;
+  logout: () => void;
+}>({...});
+
+export function UserProvider({ children }) {
+  const [user, setUser] = useState<User | null>(() => {
+    // Load from sessionStorage
+    const stored = sessionStorage.getItem('currentUser');
+    return stored ? JSON.parse(stored) : null;
+  });
+
+  const logout = () => {
+    setUser(null);
+    sessionStorage.removeItem('currentUser');
+    // Clear all sensitive data
+  };
+
+  return (
+    <UserContext.Provider value={{ user, setUser, logout }}>
+      {children}
+    </UserContext.Provider>
+  );
+}
+```
+
+---
+
+## **📋 TASK 2: Real Camera Integration**
+
+### **Current Problem**
+`FacialRecognition.tsx` just shows animations. No actual camera usage.
+
+### **What You Need to Build**
+
+#### **2.1 Install Required Libraries**
+
+```bash
+npm install @mediapipe/face_detection
+npm install react-webcam
+```
+
+#### **2.2 Create Webcam Component**
+
+**File to Create:** `src/app/components/WebcamCapture.tsx`
+
+```typescript
+import Webcam from 'react-webcam';
+import { useRef, useState, useCallback } from 'react';
+
+interface WebcamCaptureProps {
+  onCapture: (imageBase64: string) => void;
+  showFaceGuide?: boolean;
+}
+
+export function WebcamCapture({ onCapture, showFaceGuide }: WebcamCaptureProps) {
+  const webcamRef = useRef<Webcam>(null);
+  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [faceDetected, setFaceDetected] = useState(false);
+
+  const requestPermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: 640, 
+          height: 480,
+          facingMode: 'user' // Front camera
+        } 
+      });
+      setHasPermission(true);
+      return stream;
+    } catch (err) {
+      console.error('Camera permission denied:', err);
+      setHasPermission(false);
+    }
+  };
+
+  const capture = useCallback(() => {
+    const imageSrc = webcamRef.current?.getScreenshot();
+    if (imageSrc) {
+      // imageSrc is already base64
+      onCapture(imageSrc.split(',')[1]); // Remove "data:image/jpeg;base64," prefix
+    }
+  }, [webcamRef, onCapture]);
+
+  // TODO: Add face detection loop using MediaPipe
+  // Continuously check if face is in frame and update faceDetected state
+
+  if (hasPermission === null) {
+    return (
+      <div className="text-center">
+        <button onClick={requestPermission} className="btn-primary">
+          📷 Allow Camera Access
+        </button>
+      </div>
+    );
+  }
+
+  if (hasPermission === false) {
+    return (
+      <div className="text-center text-red-400">
+        ❌ Camera access denied. Please enable camera in browser settings.
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <Webcam
+        ref={webcamRef}
+        screenshotFormat="image/jpeg"
+        videoConstraints={{ width: 640, height: 480, facingMode: 'user' }}
+        className="rounded-xl"
+      />
+      
+      {showFaceGuide && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          {/* Face guide oval */}
+          <div className="w-48 h-64 border-4 border-blue-400 rounded-full opacity-50" />
+        </div>
+      )}
+
+      {faceDetected && (
+        <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm">
+          ✓ Face Detected
+        </div>
+      )}
+
+      <div className="mt-4 flex gap-3">
+        <button onClick={capture} className="btn-primary flex-1">
+          📸 Capture Photo
+        </button>
+      </div>
+    </div>
+  );
+}
+```
+
+#### **2.3 Update FacialRecognition Component**
+
+**File to Modify:** `src/app/components/FacialRecognition.tsx`
+
+Replace the animated mock with real camera:
+
+```typescript
+export function FacialRecognition() {
+  const navigate = useNavigate();
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
+
+  const handleCapture = async (imageBase64: string) => {
+    setCapturedImage(imageBase64);
+    setIsVerifying(true);
+
+    try {
+      // Get transaction details from context/storage
+      const txData = JSON.parse(sessionStorage.getItem('pendingTransaction') || '{}');
+      
+      // Call backend API
+      const response = await fetch('/transaction/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: txData.userId,
+          face_image_b64: imageBase64,
+          amount_rupees: parseFloat(txData.amount),
+          recipient_upi: txData.recipientUpi
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.error) {
+        alert(`Face verification failed: ${result.error}`);
+        setIsVerifying(false);
+        return;
+      }
+
+      // Store challenge for PIN verification
+      sessionStorage.setItem('txChallenge', JSON.stringify(result));
+      
+      // Navigate to PIN entry
+      setTimeout(() => navigate('/verify-pin'), 1000);
+      
+    } catch (error) {
+      console.error('Transaction initiation failed:', error);
+      alert('Failed to verify face. Please try again.');
+      setIsVerifying(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white p-4">
+      <div className="max-w-md mx-auto">
+        <h1 className="text-2xl mb-6">Face Authentication</h1>
+        
+        {!capturedImage ? (
+          <WebcamCapture onCapture={handleCapture} showFaceGuide />
+        ) : (
+          <div>
+            <img src={`data:image/jpeg;base64,${capturedImage}`} className="rounded-xl mb-4" />
+            {isVerifying ? (
+              <div className="text-center">
+                <div className="spinner" />
+                <p>Verifying your identity...</p>
+              </div>
+            ) : (
+              <button onClick={() => setCapturedImage(null)} className="btn-secondary">
+                Retake Photo
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+---
+
+## **📋 TASK 3: Connect Frontend to Backend API**
+
+### **Current Problem**
+Frontend makes **zero API calls**. All data is mocked.
+
+### **What You Need to Build**
+
+#### **3.1 Create API Service Layer**
+
+**File to Create:** `src/api/secureUpiApi.ts`
+
+```typescript
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+export interface RegisterRequest {
+  user_id: string;
+  face_image_b64: string;
+  pin: string;
+}
+
+export interface InitiateTransactionRequest {
+  user_id: string;
+  face_image_b64: string;
+  amount_rupees: number;
+  recipient_upi: string;
+}
+
+export interface VerifyTransactionRequest {
+  tx_id: string;
+  pin_digits: { [position: string]: string };
+}
+
+class SecureUpiApi {
+  private async request(endpoint: string, options: RequestInit = {}) {
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || 'API request failed');
+    }
+
+    return response.json();
+  }
+
+  async register(data: RegisterRequest) {
+    return this.request('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async initiateTransaction(data: InitiateTransactionRequest) {
+    return this.request('/transaction/initiate', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async verifyTransaction(data: VerifyTransactionRequest) {
+    return this.request('/transaction/verify', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async health() {
+    return this.request('/health');
+  }
+}
+
+export const api = new SecureUpiApi();
+```
+
+#### **3.2 Add Environment Configuration**
+
+**File to Create:** `.env`
+
+```bash
+VITE_API_URL=http://localhost:5000
+```
+
+**File to Create:** `.env.production`
+
+```bash
+VITE_API_URL=https://api.securestegoupi.com
+```
+
+#### **3.3 Update PinVerification to Use API Data**
+
+**File to Modify:** `src/app/components/PinVerification.tsx`
+
+**CRITICAL CHANGE:** Lines 9-10 currently hardcode positions. This breaks security!
+
+```typescript
+export function PinVerification() {
+  const navigate = useNavigate();
+  const [enteredDigits, setEnteredDigits] = useState<Record<number, string>>({});
+  const [challenge, setChallenge] = useState<TransactionChallenge | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Load challenge from API response
+    const data = sessionStorage.getItem('txChallenge');
+    if (!data) {
+      alert('No transaction found. Please start a new transaction.');
+      navigate('/');
+      return;
+    }
+
+    const parsed = JSON.parse(data);
+    setChallenge(parsed);
+
+    // TODO: Verify stego image integrity
+    // Extract session_token from stego_image_b64 and compare pin_positions
+    
+  }, [navigate]);
+
+  const handleSubmit = async () => {
+    if (!challenge) return;
+
+    try {
+      const result = await api.verifyTransaction({
+        tx_id: challenge.tx_id,
+        pin_digits: enteredDigits
+      });
+
+      if (result.authorized) {
+        sessionStorage.setItem('receipt', JSON.stringify(result.receipt));
+        navigate('/success');
+      } else {
+        setError(result.reason);
+        // Show remaining attempts
+      }
+    } catch (err) {
+      setError('Verification failed. Please try again.');
+    }
+  };
+
+  // Use challenge.pin_positions instead of hardcoded [1,3,5]
+  const requiredPositions = challenge?.pin_positions ?? [];
+
+  // ... rest of component
+}
+```
+
+---
+
+## **📋 TASK 4: Additional Features for Elegance & Robustness**
+
+### **4.1 Loading States & Skeletons**
+
+Use `react-loading-skeleton` or custom skeletons for all async operations:
+
+```typescript
+{isLoading ? (
+  <div className="animate-pulse">
+    <div className="h-10 bg-slate-700 rounded mb-4" />
+    <div className="h-20 bg-slate-700 rounded" />
+  </div>
+) : (
+  <ActualContent />
+)}
+```
+
+### **4.2 Error Boundary Component**
+
+**File to Create:** `src/app/components/ErrorBoundary.tsx`
+
+```typescript
+export class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+          <div className="max-w-md bg-slate-900 rounded-xl p-6 border border-red-500">
+            <h2 className="text-2xl text-red-400 mb-4">Something went wrong</h2>
+            <p className="text-slate-300 mb-4">{this.state.error?.message}</p>
+            <button 
+              onClick={() => window.location.href = '/'}
+              className="btn-primary w-full"
+            >
+              Return Home
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+```
+
+### **4.3 Transaction History**
+
+**New Route:** `/history`
+
+**File to Create:** `src/app/components/TransactionHistory.tsx`
+
+```typescript
+export function TransactionHistory() {
+  const { user } = useContext(UserContext);
+  const [transactions, setTransactions] = useState([]);
+
+  useEffect(() => {
+    // Fetch user's transaction history from backend
+    fetch(`/transactions/list?user_id=${user?.userId}`)
+      .then(res => res.json())
+      .then(data => setTransactions(data));
+  }, [user]);
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white p-4">
+      <h1 className="text-2xl mb-6">Transaction History</h1>
+      
+      {transactions.map(tx => (
+        <div key={tx.tx_id} className="bg-slate-900 rounded-xl p-4 mb-3 border border-slate-800">
+          <div className="flex justify-between items-start mb-2">
+            <div>
+              <div className="text-lg">₹{tx.amount_rupees}</div>
+              <div className="text-sm text-slate-400">to {tx.recipient_upi}</div>
+            </div>
+            <StatusBadge status={tx.status} />
+          </div>
+          <div className="text-xs text-slate-500">
+            {new Date(tx.timestamp * 1000).toLocaleString()}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+### **4.4 Biometric Security Indicator**
+
+Show security level throughout the app:
+
+```typescript
+function SecurityIndicator() {
+  return (
+    <div className="flex items-center gap-2 text-xs text-slate-400">
+      <Shield className="w-4 h-4 text-green-400" />
+      <span>2-Layer Auth Active</span>
+      <div className="flex gap-1">
+        <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+        <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+        <div className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+      </div>
+    </div>
+  );
+}
+```
+
+### **4.5 Offline Mode Detection**
+
+```typescript
+function OfflineDetector() {
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  if (isOnline) return null;
+
+  return (
+    <div className="fixed top-0 left-0 right-0 bg-red-500 text-white p-2 text-center text-sm z-50">
+      ⚠️ No internet connection. Transactions disabled.
+    </div>
+  );
+}
+```
+
+### **4.6 Session Timeout & Auto-Logout**
+
+```typescript
+function useSessionTimeout(timeoutMs = 5 * 60 * 1000) {
+  const { logout } = useContext(UserContext);
+  const timeoutRef = useRef<NodeJS.Timeout>();
+
+  const resetTimeout = useCallback(() => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    
+    timeoutRef.current = setTimeout(() => {
+      alert('Session expired due to inactivity.');
+      logout();
+    }, timeoutMs);
+  }, [logout, timeoutMs]);
+
+  useEffect(() => {
+    const events = ['mousedown', 'keydown', 'scroll', 'touchstart'];
+    events.forEach(event => document.addEventListener(event, resetTimeout));
+    resetTimeout();
+
+    return () => {
+      events.forEach(event => document.removeEventListener(event, resetTimeout));
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, [resetTimeout]);
+}
+```
+
+### **4.7 Accessibility Improvements**
+
+- Add ARIA labels to all interactive elements
+- Support keyboard navigation (Tab, Enter, Escape)
+- Add screen reader announcements for status changes
+- Ensure color contrast meets WCAG AA standards
+
+```typescript
+<button
+  aria-label="Capture face photo for verification"
+  onClick={capture}
+  className="btn-primary"
+>
+  📸 Capture Photo
+</button>
+
+<div role="alert" aria-live="polite">
+  {error && <span className="text-red-400">{error}</span>}
+</div>
+```
+
+### **4.8 Progressive Web App (PWA)**
+
+Add PWA capabilities for mobile-like experience:
+
+**File to Create:** `public/manifest.json`
+
+```json
+{
+  "name": "SecureStego UPI",
+  "short_name": "SecureUPI",
+  "description": "Next-gen secure payment system with steganography",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+```
+
+### **4.9 Animated Transitions**
+
+Use Framer Motion for smooth page transitions:
+
+```typescript
+import { motion, AnimatePresence } from 'motion/react';
+
+function PageTransition({ children }: { children: React.ReactNode }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -20 }}
+      transition={{ duration: 0.3 }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+```
+
+### **4.10 Toast Notifications**
+
+Use `react-hot-toast` for non-intrusive notifications:
+
+```typescript
+import toast, { Toaster } from 'react-hot-toast';
+
+// In App.tsx
+<Toaster position="top-center" />
+
+// Usage
+toast.success('Transaction authorized!');
+toast.error('Face verification failed');
+toast.loading('Processing transaction...');
+```
+
+---
+
+## **📋 TASK 5: Security Best Practices**
+
+### **5.1 Never Log Sensitive Data**
+
+```typescript
+// ❌ BAD
+console.log('PIN:', pin);
+console.log('Face image:', faceImageBase64);
+
+// ✅ GOOD
+console.log('PIN length:', pin.length);
+console.log('Face image size:', faceImageBase64.length, 'bytes');
+```
+
+### **5.2 Clear Sensitive Data on Unmount**
+
+```typescript
+useEffect(() => {
+  return () => {
+    // Cleanup on unmount
+    sessionStorage.removeItem('txChallenge');
+    setCapturedImage(null);
+  };
+}, []);
+```
+
+### **5.3 Use HTTPS in Production**
+
+Ensure `VITE_API_URL` uses HTTPS in production environment.
+
+### **5.4 Implement CSRF Protection**
+
+Add CSRF token to all API requests:
+
+```typescript
+const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+
+headers: {
+  'X-CSRF-Token': csrfToken,
+}
+```
+
+---
+
+## **📁 File Structure After Changes**
+
+```
+frontend/
+├── src/
+│   ├── api/
+│   │   └── secureUpiApi.ts         [NEW]
+│   ├── app/
+│   │   ├── components/
+│   │   │   ├── ErrorBoundary.tsx   [NEW]
+│   │   │   ├── FacialRecognition.tsx [MODIFY]
+│   │   │   ├── InitiateTransaction.tsx [MODIFY]
+│   │   │   ├── PinVerification.tsx [MODIFY - CRITICAL]
+│   │   │   ├── Registration.tsx    [NEW]
+│   │   │   ├── TransactionHistory.tsx [NEW]
+│   │   │   ├── TransactionSuccess.tsx
+│   │   │   └── WebcamCapture.tsx   [NEW]
+│   │   ├── context/
+│   │   │   └── UserContext.tsx     [NEW]
+│   │   ├── hooks/
+│   │   │   ├── useSessionTimeout.ts [NEW]
+│   │   │   └── useOnlineStatus.ts  [NEW]
+│   │   ├── App.tsx                 [MODIFY]
+│   │   └── routes.tsx              [MODIFY]
+│   └── main.tsx
+├── .env                            [NEW]
+├── .env.production                 [NEW]
+└── package.json                    [MODIFY - add deps]
+```
+
+---
+
+## **🎯 Success Criteria**
+
+Your implementation is complete when:
+
+- ✅ Users can register from the UI (not just hardcoded)
+- ✅ Real camera captures face images
+- ✅ All transactions call actual backend APIs
+- ✅ PIN verification uses `pin_positions` from API (not hardcoded `[1,3,5]`)
+- ✅ Loading states shown for all async operations
+- ✅ Error handling on all network requests
+- ✅ Responsive design works on mobile (375px) and desktop (1920px)
+- ✅ Accessibility: keyboard navigation + screen reader support
+- ✅ Session timeout after 5 minutes of inactivity
+- ✅ No sensitive data logged to console
+- ✅ PWA installable on mobile devices
+
+---
+
+## **🚀 Getting Started**
+
+1. **Install dependencies:**
+   ```bash
+   cd frontend
+   npm install react-webcam @mediapipe/face_detection react-hot-toast react-loading-skeleton
+   ```
+
+2. **Start with registration flow** (easiest first)
+3. **Then add camera integration** (medium difficulty)
+4. **Finally connect to APIs** (most critical)
+
+4. **Test thoroughly:**
+   - Try registering with invalid data (should show errors)
+   - Test camera on different devices
+   - Verify PIN verification uses API data
+
+---
+
+## **💡 Tips for Success**
+
+1. **Test incrementally:** Don't write everything at once. Build one component, test it, then move on.
+
+2. **Use browser DevTools:** Check Network tab to verify API calls are working.
+
+3. **Handle errors gracefully:** Every `fetch()` needs try/catch and error UI.
+
+4. **Mobile-first design:** Test on mobile viewport (Chrome DevTools → Toggle Device Toolbar).
+
+5. **Ask for help:** If stuck on camera permissions or API integration, ask senior dev for code review.
+
+6. **Read existing code:** `PinVerification.tsx` already has good UI patterns—reuse them!
+
+---
+
+**Good luck! This will make the frontend production-ready. 🚀**

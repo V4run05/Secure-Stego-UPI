@@ -1,0 +1,624 @@
+Prompt CLI
+
+## **OBJECTIVE**
+
+Create a Python CLI application (`cli.py`) that interfaces with the Secure-Stego-UPI backend API, providing **verbose step-by-step visibility** into every security operation including:
+- Client-side hashing and encryption
+- Key derivation processes
+- Steganography encoding/decoding
+- Dynamic PIN challenge generation
+- MAC computations and verifications
+- All database operations
+
+The CLI should demonstrate the security model in action with detailed logging at each step.
+
+---
+
+## **REQUIREMENTS**
+
+### **1. CLI Structure**
+
+Create a CLI with the following commands:
+
+```bash
+# User Registration
+python cli.py register --user-id "alice@upi" --pin "123456" --face-image "path/to/face.jpg"
+
+# Initiate Transaction (with verbose step-by-step output)
+python cli.py initiate --user-id "alice@upi" --recipient "bob@upi" --amount 100.50 --face-image "path/to/face.jpg"
+
+# Verify Transaction (submit PIN digits)
+python cli.py verify --tx-id "abc-123" --pin-digits "1:4,3:7,5:2"
+
+# Show Transaction Details
+python cli.py show-tx --tx-id "abc-123"
+
+# List All Transactions
+python cli.py list-txs --user-id "alice@upi"
+
+# Decode Stego Image (for educational purposes)
+python cli.py decode-stego --image "stego.png" --salt-b64 "..." --password "..."
+
+# Health Check
+python cli.py health
+```
+
+---
+
+### **2. Verbose Output Format**
+
+**Every operation must display:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 1: Input Validation                                        │
+├─────────────────────────────────────────────────────────────────┤
+│ ✓ User ID: alice@upi (valid UPI format)                        │
+│ ✓ PIN: ****** (6 digits, format validated)                     │
+│ ✓ Face image: 640x480 RGB (valid JPEG)                         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 2: Client-Side PIN Hashing                                │
+├─────────────────────────────────────────────────────────────────┤
+│ Algorithm: bcrypt (rounds=12)                                   │
+│ Input (plaintext PIN): ******                                   │
+│ Salt generated: $2b$12$AbCdEfGh...                             │
+│ ✓ PIN Hash: $2b$12$AbCdEfGh...XyZ123                           │
+│   [First 20 chars]: $2b$12$AbCdEfGh...                         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 3: Building Registration MACs (per-position HMACs)        │
+├─────────────────────────────────────────────────────────────────┤
+│ Server Secret: dev-secret-change-in-production                  │
+│                                                                 │
+│ Position 1 (digit: *):                                         │
+│   Pos Key = SHA256("dev-secret:alice@upi:1")                   │
+│           = a1b2c3d4e5f6...                                     │
+│   Reg MAC = HMAC-SHA256(pos_key, digit)                        │
+│           = 8f7e6d5c4b3a...                                     │
+│                                                                 │
+│ Position 2 (digit: *):                                         │
+│   Pos Key = SHA256("dev-secret:alice@upi:2")                   │
+│           = f1e2d3c4b5a6...                                     │
+│   Reg MAC = HMAC-SHA256(pos_key, digit)                        │
+│           = 9a8b7c6d5e4f...                                     │
+│                                                                 │
+│ ... (continues for all 6 positions)                            │
+│                                                                 │
+│ ✓ Stored 6 registration MACs in database                       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 4: Face Embedding Extraction                              │
+├─────────────────────────────────────────────────────────────────┤
+│ Model: FaceNet (pretrained)                                     │
+│ Input: face.jpg (640x480)                                       │
+│ Preprocessing: Resize → (160,160) → Normalize                  │
+│ ✓ Embedding vector: [0.123, -0.456, 0.789, ...] (128-dim)     │
+│ ✓ L2 Norm: 1.0000                                              │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 5: Database Storage                                       │
+├─────────────────────────────────────────────────────────────────┤
+│ Table: users                                                    │
+│   user_id:        alice@upi                                     │
+│   pin_hash:       $2b$12$AbCdEfGh...XyZ123                     │
+│   pin_length:     6                                             │
+│   failed_attempts: 0                                            │
+│   created_at:     2026-04-08 12:20:15                          │
+│                                                                 │
+│ Table: registration_macs                                        │
+│   user_id: alice@upi                                            │
+│   position: 1, mac: 8f7e6d5c4b3a...                            │
+│   position: 2, mac: 9a8b7c6d5e4f...                            │
+│   ... (6 rows inserted)                                         │
+│                                                                 │
+│ Table: face_embeddings                                          │
+│   user_id: alice@upi                                            │
+│   embedding: <128-byte blob>                                    │
+│                                                                 │
+│ ✓ Registration complete                                        │
+└─────────────────────────────────────────────────────────────────┘
+
+✓ USER REGISTERED SUCCESSFULLY
+  User ID: alice@upi
+  Registration Time: 2026-04-08 12:20:15 UTC
+```
+
+---
+
+### **3. Detailed Steps for Transaction Initiation**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ TRANSACTION INITIATION: alice@upi → bob@upi (₹100.50)         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 1: Face Authentication (Layer 1)                          │
+├─────────────────────────────────────────────────────────────────┤
+│ Input: face_image.jpg                                           │
+│ ✓ Face detected: 1 face found                                  │
+│ ✓ Embedding extracted: [0.987, -0.654, ...] (128-dim)         │
+│                                                                 │
+│ Comparing against stored embedding:                             │
+│   Stored:  [0.123, -0.456, 0.789, ...]                        │
+│   Current: [0.987, -0.654, 0.321, ...]                        │
+│   Cosine Similarity: 0.9823                                    │
+│   Threshold: 0.75                                              │
+│   ✓ MATCH (similarity > threshold)                             │
+│                                                                 │
+│ ✓ Face authentication PASSED                                   │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 2: Transaction Object Creation                            │
+├─────────────────────────────────────────────────────────────────┤
+│ tx_id:         f47ac10b-58cc-4372-a567-0e02b2c3d479           │
+│ sender_upi:    alice@upi                                        │
+│ recipient_upi: bob@upi                                          │
+│ amount_rupees: 100.50                                           │
+│ amount_cents:  10050 (uint32)                                  │
+│ timestamp:     1712582415 (Unix time)                          │
+│ status:        PENDING_PIN                                     │
+│                                                                 │
+│ Session Token Generation:                                       │
+│   ✓ Generated 6 random bytes: 3f 7a 9c 1e 4d 6b               │
+│   ✓ session_token = b'\x3f\x7a\x9c\x1e\x4d\x6b'              │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 3: Compact Token Encoding                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ Building 16-byte compact token:                                 │
+│                                                                 │
+│ Bytes 0-5:  session_token   = 3f 7a 9c 1e 4d 6b               │
+│ Bytes 6-9:  tx_id_hash      = SHA256(tx_id)[:4]               │
+│                              = a1 b2 c3 d4                     │
+│ Bytes 10-13: amount_cents   = 10050 (big-endian)              │
+│                              = 00 00 27 42                     │
+│ Bytes 14-15: recipient_hash = SHA256(bob@upi)[:2]             │
+│                              = e5 f6                           │
+│                                                                 │
+│ ✓ Compact Token (16 bytes):                                    │
+│   3f 7a 9c 1e 4d 6b a1 b2 c3 d4 00 00 27 42 e5 f6            │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 4: AES Encryption of Compact Token                        │
+├─────────────────────────────────────────────────────────────────┤
+│ Deriving encryption keys:                                       │
+│   Password: SHA256("dev-secret:alice@upi")                     │
+│           = 7d8e9f0a1b2c...                                     │
+│   Salt (random 16 bytes): 9a 8b 7c 6d 5e 4f ...               │
+│   PBKDF2-HMAC-SHA256:                                          │
+│     iterations: 200,000                                         │
+│     dklen: 24 bytes                                            │
+│   ✓ Derived Key: 1a 2b 3c 4d 5e 6f ... (24 bytes)            │
+│     AES Key (first 16): 1a 2b 3c 4d 5e 6f 7a 8b ...          │
+│     PRNG Seed (last 8): 9c 0d 1e 2f 3a 4b 5c 6d              │
+│                       = 11234567890 (uint64)                   │
+│                                                                 │
+│ AES-128-CBC Encryption:                                         │
+│   Plaintext: 3f 7a 9c ... (16 bytes)                          │
+│   IV (random): f1 e2 d3 c4 b5 a6 ... (16 bytes)              │
+│   ✓ Ciphertext: 8a 7b 6c 5d 4e 3f ... (16 bytes)             │
+│                                                                 │
+│ ✓ Encrypted Blob (32 bytes): IV || Ciphertext                 │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 5: GAN Steganography Encoding                            │
+├─────────────────────────────────────────────────────────────────┤
+│ Converting encrypted blob to bit tensor:                        │
+│   32 bytes → 256 bits                                          │
+│   ✓ Bit tensor: [1,0,0,1,1,0,1,0, ...] (256 values)          │
+│                                                                 │
+│ Generating noise vector:                                        │
+│   PRNG Seed: 11234567890                                       │
+│   torch.manual_seed(11234567890)                               │
+│   ✓ z = randn(1, 100) → [-0.345, 1.234, -0.678, ...]        │
+│                                                                 │
+│ Generator Forward Pass:                                         │
+│   Input: z (100-dim) + message (256-dim)                       │
+│   G(z, m) → Conv layers → BatchNorm → ReLU → ...             │
+│   ✓ Output: RGB tensor (3 × 64 × 64)                          │
+│                                                                 │
+│ Converting to PIL Image:                                        │
+│   Denormalize: (t + 1) / 2 → [0, 1]                          │
+│   Scale: × 255 → [0, 255]                                     │
+│   ✓ Stego Image: 64×64 RGB PNG                                │
+│                                                                 │
+│ ✓ Stego image saved: stego_f47ac10b.png                       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 6: Dynamic PIN Challenge Generation                       │
+├─────────────────────────────────────────────────────────────────┤
+│ Deriving challenge positions from session_token:               │
+│   session_token = b'\x3f\x7a\x9c\x1e\x4d\x6b'                │
+│   tx_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"              │
+│                                                                 │
+│   digest = HMAC-SHA256(session_token, tx_id)                  │
+│          = 7f 8e 9d 0c 1b 2a 3c 4d 5e 6f 7a 8b 9c 0d ...     │
+│                                                                 │
+│   Selecting 3 positions from 6-digit PIN:                      │
+│     byte[0] = 0x7f → 127 % 6 = 1 → position 1                │
+│     byte[1] = 0x8e → 142 % 6 = 4 (duplicate, skip)           │
+│     byte[2] = 0x9d → 157 % 6 = 1 (duplicate, skip)           │
+│     byte[3] = 0x0c →  12 % 6 = 0 → position 0 → pos 1 (dup)  │
+│     byte[4] = 0x1b →  27 % 6 = 3 → position 3                │
+│     byte[5] = 0x2a →  42 % 6 = 0 → position 0 → pos 1 (dup)  │
+│     byte[6] = 0x3c →  60 % 6 = 0 → position 0 → pos 1 (dup)  │
+│     byte[7] = 0x4d →  77 % 6 = 5 → position 5                │
+│                                                                 │
+│   ✓ Challenge Positions (1-indexed): [1, 3, 5]                │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 7: Building Expected MACs for Challenge Positions         │
+├─────────────────────────────────────────────────────────────────┤
+│ Loading registration MACs from database:                        │
+│   user_id: alice@upi                                            │
+│   ✓ Retrieved 6 registration MACs                              │
+│                                                                 │
+│ Building transaction-bound MACs:                                │
+│                                                                 │
+│ Position 1:                                                     │
+│   reg_mac[1] = 8f7e6d5c4b3a... (from registration)            │
+│   tx_mac[1]  = HMAC(reg_mac[1], tx_id)                        │
+│              = HMAC(8f7e..., "f47ac10b-58cc...")              │
+│              = 1a2b3c4d5e6f...                                 │
+│                                                                 │
+│ Position 3:                                                     │
+│   reg_mac[3] = 2f3e4d5c6b7a...                                │
+│   tx_mac[3]  = HMAC(reg_mac[3], tx_id)                        │
+│              = 7b8c9d0e1f2a...                                 │
+│                                                                 │
+│ Position 5:                                                     │
+│   reg_mac[5] = 6a7b8c9d0e1f...                                │
+│   tx_mac[5]  = HMAC(reg_mac[5], tx_id)                        │
+│              = 3c4d5e6f7a8b...                                 │
+│                                                                 │
+│ ✓ Stored expected MACs in pin_sessions table                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 8: Database Storage                                       │
+├─────────────────────────────────────────────────────────────────┤
+│ Table: transactions                                             │
+│   tx_id: f47ac10b-58cc-4372-a567-0e02b2c3d479                 │
+│   sender_upi: alice@upi                                         │
+│   recipient_upi: bob@upi                                        │
+│   amount_rupees: 100.50                                         │
+│   timestamp: 1712582415                                         │
+│   status: PENDING_PIN                                          │
+│   session_token: <6-byte blob>                                 │
+│   auth_attempts: 0                                             │
+│                                                                 │
+│ Table: pin_sessions                                             │
+│   tx_id: f47ac10b-...                                          │
+│   positions: [1, 3, 5]                                         │
+│   expected_macs: {1: 1a2b..., 3: 7b8c..., 5: 3c4d...}        │
+│   created_at: 1712582415                                        │
+│   expires_at: 1712582715 (TTL: 300s)                          │
+│                                                                 │
+│ ✓ All data persisted                                           │
+└─────────────────────────────────────────────────────────────────┘
+
+✓ TRANSACTION INITIATED SUCCESSFULLY
+
+Response to Client:
+{
+  "tx_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "stego_image_b64": "iVBORw0KGgoAAAANSUhEUgAA...",
+  "salt_b64": "motzXV5P...",
+  "pin_positions": [1, 3, 5],
+  "amount_rupees": 100.5,
+  "recipient_upi": "bob@upi"
+}
+
+⚠️  SECURITY REMINDER:
+   The client must EXTRACT session_token from stego_image to:
+   1. Verify the challenge positions are correct
+   2. Ensure the stego image hasn't been tampered with
+   
+   If the client just uses pin_positions from the JSON without
+   verifying against the stego image, the security model is BROKEN!
+```
+
+---
+
+### **4. Detailed Steps for PIN Verification**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ PIN VERIFICATION: Transaction f47ac10b-...                      │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 1: Load Transaction and Session                           │
+├─────────────────────────────────────────────────────────────────┤
+│ Transaction ID: f47ac10b-58cc-4372-a567-0e02b2c3d479          │
+│ ✓ Transaction found in database                                │
+│   Status: PENDING_PIN                                          │
+│   Timestamp: 1712582415 (123 seconds ago)                      │
+│   TTL: 300 seconds                                             │
+│   ✓ Not expired (177 seconds remaining)                        │
+│                                                                 │
+│ ✓ PIN session found                                            │
+│   Challenge positions: [1, 3, 5]                               │
+│   Expected MACs loaded for 3 positions                         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 2: Parse Submitted PIN Digits                             │
+├─────────────────────────────────────────────────────────────────┤
+│ Input: "1:4,3:7,5:2"                                           │
+│ Parsing:                                                        │
+│   Position 1 → digit "4"                                       │
+│   Position 3 → digit "7"                                       │
+│   Position 5 → digit "2"                                       │
+│                                                                 │
+│ Validation:                                                     │
+│   ✓ All required positions present                             │
+│   ✓ All values are single digits (0-9)                         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 3: Recompute MACs for Submitted Digits                    │
+├─────────────────────────────────────────────────────────────────┤
+│ Position 1 (submitted digit: "4"):                             │
+│   pos_key = SHA256("dev-secret:alice@upi:1")                   │
+│           = a1b2c3d4e5f6...                                     │
+│   reg_mac = HMAC(pos_key, "4")                                 │
+│           = 8f7e6d5c4b3a...                                     │
+│   tx_mac  = HMAC(reg_mac, tx_id)                               │
+│           = HMAC(8f7e..., "f47ac10b-58cc...")                 │
+│           = 1a2b3c4d5e6f...                                     │
+│                                                                 │
+│ Position 3 (submitted digit: "7"):                             │
+│   pos_key = SHA256("dev-secret:alice@upi:3")                   │
+│           = f1e2d3c4b5a6...                                     │
+│   reg_mac = HMAC(pos_key, "7")                                 │
+│           = 2f3e4d5c6b7a...                                     │
+│   tx_mac  = HMAC(reg_mac, tx_id)                               │
+│           = 7b8c9d0e1f2a...                                     │
+│                                                                 │
+│ Position 5 (submitted digit: "2"):                             │
+│   pos_key = SHA256("dev-secret:alice@upi:5")                   │
+│           = 1f2e3d4c5b6a...                                     │
+│   reg_mac = HMAC(pos_key, "2")                                 │
+│           = 6a7b8c9d0e1f...                                     │
+│   tx_mac  = HMAC(reg_mac, tx_id)                               │
+│           = 3c4d5e6f7a8b...                                     │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 4: Timing-Safe MAC Comparison                             │
+├─────────────────────────────────────────────────────────────────┤
+│ Position 1:                                                     │
+│   Expected: 1a2b3c4d5e6f...                                     │
+│   Got:      1a2b3c4d5e6f...                                     │
+│   ✓ MATCH (hmac.compare_digest returned True)                  │
+│                                                                 │
+│ Position 3:                                                     │
+│   Expected: 7b8c9d0e1f2a...                                     │
+│   Got:      7b8c9d0e1f2a...                                     │
+│   ✓ MATCH                                                       │
+│                                                                 │
+│ Position 5:                                                     │
+│   Expected: 3c4d5e6f7a8b...                                     │
+│   Got:      3c4d5e6f7a8b...                                     │
+│   ✓ MATCH                                                       │
+│                                                                 │
+│ ✓ ALL POSITIONS VERIFIED                                       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 5: Authorize Transaction                                  │
+├─────────────────────────────────────────────────────────────────┤
+│ Updating transaction status:                                    │
+│   Previous: PENDING_PIN                                        │
+│   New:      AUTHORIZED                                         │
+│                                                                 │
+│ Database updates:                                               │
+│   ✓ transactions.status = AUTHORIZED                           │
+│   ✓ users.failed_attempts = 0 (reset counter)                 │
+│   ✓ pin_sessions row deleted (one-time use)                    │
+│                                                                 │
+│ ✓ Transaction authorized at 2026-04-08 12:22:38 UTC           │
+└─────────────────────────────────────────────────────────────────┘
+
+✓ TRANSACTION AUTHORIZED SUCCESSFULLY
+
+Receipt:
+{
+  "tx_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "sender_upi": "alice@upi",
+  "recipient_upi": "bob@upi",
+  "amount_rupees": 100.5,
+  "timestamp": 1712582415,
+  "status": "authorized"
+}
+```
+
+---
+
+### **5. Security Features to Highlight**
+
+The CLI should demonstrate these security principles:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ SECURITY AUDIT TRAIL                                            │
+├─────────────────────────────────────────────────────────────────┤
+│ ✓ PIN never stored in plaintext                                │
+│ ✓ PIN never transmitted over network                           │
+│ ✓ Each transaction uses unique challenge positions             │
+│ ✓ Session tokens are cryptographically random                  │
+│ ✓ MACs are transaction-bound (prevent replay attacks)          │
+│ ✓ Timing-safe comparisons used throughout                      │
+│ ✓ Stego image embeds tamper-proof transaction data             │
+│ ✓ Face embeddings stored, not raw images                       │
+│ ✓ Failed attempts tracked per user                             │
+│ ✓ PIN sessions expire after TTL                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### **6. CLI Implementation Structure**
+
+```python
+# cli.py - Main structure
+
+import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich import print as rprint
+
+console = Console()
+
+def log_step(step_num, title, details):
+    """Display formatted step with box drawing"""
+    panel = Panel(
+        details,
+        title=f"[bold cyan]STEP {step_num}: {title}[/bold cyan]",
+        border_style="blue"
+    )
+    console.print(panel)
+
+def log_hex(label, data: bytes, show_bytes=32):
+    """Display hex dump of binary data"""
+    hex_str = ' '.join(f'{b:02x}' for b in data[:show_bytes])
+    if len(data) > show_bytes:
+        hex_str += f' ... ({len(data)} bytes total)'
+    console.print(f"  {label}: [yellow]{hex_str}[/yellow]")
+
+@click.group()
+def cli():
+    """Secure-Stego-UPI CLI - Educational Security Demo"""
+    pass
+
+@cli.command()
+@click.option('--user-id', required=True)
+@click.option('--pin', required=True)
+@click.option('--face-image', required=True)
+@click.option('--verbose', '-v', is_flag=True, default=True)
+def register(user_id, pin, face_image, verbose):
+    """Register a new user with verbose security logging"""
+    
+    # Import backend API
+    from api import SecureStegoUPI
+    api = SecureStegoUPI.from_checkpoint("checkpoints/checkpoint_final.pt")
+    
+    console.rule("[bold green]USER REGISTRATION[/bold green]")
+    
+    # Step 1: Input Validation
+    log_step(1, "Input Validation", validate_inputs(user_id, pin, face_image))
+    
+    # Step 2: Client-Side PIN Hashing
+    log_step(2, "Client-Side PIN Hashing", show_pin_hashing(pin))
+    
+    # Step 3: Building Registration MACs
+    log_step(3, "Building Registration MACs", 
+             show_registration_macs(pin, user_id, api._p.app_secret))
+    
+    # ... continue with all steps
+    
+    # Call actual registration
+    result = api.register_user(user_id, face_image, pin)
+    
+    if result['success']:
+        console.print("\n[bold green]✓ USER REGISTERED SUCCESSFULLY[/bold green]")
+    else:
+        console.print(f"\n[bold red]✗ REGISTRATION FAILED: {result['reason']}[/bold red]")
+
+# Similar verbose implementations for other commands...
+
+if __name__ == '__main__':
+    cli()
+```
+
+---
+
+### **7. Additional CLI Commands**
+
+```bash
+# Educational/Debug Commands
+
+# Show security internals for a user
+python cli.py inspect-user --user-id "alice@upi"
+  ↳ Shows: PIN hash, registration MACs, face embedding stats
+
+# Simulate a man-in-the-middle attack (should fail)
+python cli.py attack-mitm --tx-id "abc-123" --tampered-amount 999.99
+  ↳ Demonstrates why tampering fails (MAC mismatch)
+
+# Simulate replay attack (should fail)
+python cli.py attack-replay --tx-id "old-tx-123" --pin-digits "1:4,3:7,5:2"
+  ↳ Shows transaction-bound MACs prevent replay
+
+# Benchmark security operations
+python cli.py benchmark
+  ↳ Time PIN hashing, MAC computation, stego encoding/decoding
+```
+
+---
+
+### **8. Output Color Coding**
+
+```python
+# Use Rich library for colored, structured output
+
+# Success operations: GREEN
+console.print("[green]✓ Verification passed[/green]")
+
+# Security operations: CYAN
+console.print("[cyan]→ Computing HMAC-SHA256...[/cyan]")
+
+# Warnings: YELLOW
+console.print("[yellow]⚠  Session expires in 30 seconds[/yellow]")
+
+# Errors: RED
+console.print("[red]✗ MAC mismatch - invalid PIN digit[/red]")
+
+# Binary data: YELLOW hex
+log_hex("Session Token", session_token_bytes)
+
+# Keys/secrets: MAGENTA (truncated)
+console.print("[magenta]Server Secret: dev-secret-***[/magenta]")
+```
+
+---
+
+## **EXPECTED OUTPUT**
+
+When someone runs the CLI, they should see **every single cryptographic operation** laid out step-by-step, making it an educational tool for understanding:
+
+1. **Why plaintext PINs should never be transmitted**
+2. **How HMAC-based verification works without storing PINs**
+3. **Why steganography provides tamper-proof transaction binding**
+4. **How dynamic PIN challenges prevent shoulder-surfing**
+5. **Why transaction-bound MACs prevent replay attacks**
+
+---
+
+## **DELIVERABLE**
+
+Create `cli.py` with:
+- ✅ All 8 commands implemented
+- ✅ Verbose logging for every security operation
+- ✅ Hex dumps of all binary data
+- ✅ Step-by-step MAC computations
+- ✅ Database operation visibility
+- ✅ Color-coded output for readability
+- ✅ Educational comments explaining each security decision
+- ✅ Works with existing `api.py` backend
+
+This CLI will serve as both a functional tool and a security audit trail.

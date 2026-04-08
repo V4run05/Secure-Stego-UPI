@@ -1,7 +1,7 @@
 """
 upi/database.py
-SQLite persistence for users, face embeddings, transactions, and PIN sessions.
-Uses Python's built-in sqlite3 — no extra dependencies.
+SQLite persistence for users, face embeddings, transactions, PIN sessions,
+and audit logs.
 """
 
 import base64
@@ -50,7 +50,18 @@ CREATE TABLE IF NOT EXISTS pin_sessions (
     tx_id               TEXT PRIMARY KEY,
     challenge_positions TEXT NOT NULL,
     expected_macs_json  TEXT NOT NULL,
-    created_at          INTEGER NOT NULL
+    created_at          INTEGER NOT NULL,
+    expires_at          INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp  INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    user_id    TEXT,
+    tx_id      TEXT,
+    outcome    TEXT NOT NULL,
+    details    TEXT
 );
 """
 
@@ -141,7 +152,6 @@ class DatabaseManager:
     # ── registration MACs ────────────────────────────────────────────────────
 
     def store_registration_macs(self, user_id: str, macs: dict[int, bytes]) -> None:
-        """Store per-position MACs built at registration time."""
         serialised = {str(k): base64.b64encode(v).decode() for k, v in macs.items()}
         with self._tx() as c:
             c.execute(
@@ -151,7 +161,6 @@ class DatabaseManager:
             )
 
     def load_registration_macs(self, user_id: str) -> dict[int, bytes] | None:
-        """Load per-position registration MACs. Returns {pos: bytes} or None."""
         with self._tx() as c:
             row = c.execute("SELECT macs_json FROM registration_macs WHERE user_id=?", (user_id,)).fetchone()
             if not row:
@@ -190,25 +199,44 @@ class DatabaseManager:
                 auth_attempts = row["auth_attempts"],
             )
 
+    def get_user_transactions(self, user_id: str) -> list[dict]:
+        """Return all transactions for a user, newest first."""
+        with self._tx() as c:
+            rows = c.execute(
+                """SELECT tx_id, sender_upi, recipient_upi, amount_rupees, timestamp, status
+                   FROM transactions WHERE sender_upi=? ORDER BY timestamp DESC""",
+                (user_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     # ── PIN sessions ─────────────────────────────────────────────────────────
 
     def save_pin_session(self, tx_id: str, challenge_positions: list[int],
-                          expected_macs: dict[int, bytes]) -> None:
+                          expected_macs: dict[int, bytes],
+                          ttl_seconds: int = 300) -> None:
         macs_json = json.dumps({str(k): base64.b64encode(v).decode() for k, v in expected_macs.items()})
+        now = int(time.time())
         with self._tx() as c:
             c.execute(
-                """INSERT INTO pin_sessions (tx_id,challenge_positions,expected_macs_json,created_at)
-                   VALUES (?,?,?,?)
+                """INSERT INTO pin_sessions
+                   (tx_id,challenge_positions,expected_macs_json,created_at,expires_at)
+                   VALUES (?,?,?,?,?)
                    ON CONFLICT(tx_id) DO UPDATE SET
                    challenge_positions=excluded.challenge_positions,
-                   expected_macs_json=excluded.expected_macs_json""",
-                (tx_id, json.dumps(challenge_positions), macs_json, int(time.time()))
+                   expected_macs_json=excluded.expected_macs_json,
+                   expires_at=excluded.expires_at""",
+                (tx_id, json.dumps(challenge_positions), macs_json, now, now + ttl_seconds)
             )
 
     def load_pin_session(self, tx_id: str) -> tuple[list[int], dict[int, bytes]] | None:
+        """Return (positions, macs) or None if not found or expired."""
         with self._tx() as c:
             row = c.execute("SELECT * FROM pin_sessions WHERE tx_id=?", (tx_id,)).fetchone()
             if not row:
+                return None
+            if int(time.time()) > row["expires_at"]:
+                c.execute("DELETE FROM pin_sessions WHERE tx_id=?", (tx_id,))
+                logger.warning(f"PIN session expired and cleaned up: {tx_id}")
                 return None
             positions = json.loads(row["challenge_positions"])
             macs      = {int(k): base64.b64decode(v)
@@ -218,6 +246,41 @@ class DatabaseManager:
     def delete_pin_session(self, tx_id: str) -> None:
         with self._tx() as c:
             c.execute("DELETE FROM pin_sessions WHERE tx_id=?", (tx_id,))
+
+    # ── audit log ────────────────────────────────────────────────────────────
+
+    def add_audit_log(self, event_type: str, outcome: str,
+                       user_id: str | None = None,
+                       tx_id: str | None = None,
+                       details: str | None = None) -> None:
+        """
+        Record an audit event. Never include plaintext credentials in details.
+
+        event_type: REGISTER, FACE_AUTH, TX_INITIATE, TX_VERIFY, ACCOUNT_LOCK
+        outcome:    SUCCESS, FAILURE, ERROR
+        """
+        with self._tx() as c:
+            c.execute(
+                """INSERT INTO audit_log (timestamp,event_type,user_id,tx_id,outcome,details)
+                   VALUES (?,?,?,?,?,?)""",
+                (int(time.time()), event_type, user_id, tx_id, outcome, details)
+            )
+
+    def get_audit_log(self, user_id: str | None = None,
+                       limit: int = 100) -> list[dict]:
+        """Retrieve recent audit log entries, optionally filtered by user."""
+        with self._tx() as c:
+            if user_id:
+                rows = c.execute(
+                    "SELECT * FROM audit_log WHERE user_id=? ORDER BY timestamp DESC LIMIT ?",
+                    (user_id, limit)
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
+            return [dict(r) for r in rows]
 
     def close(self) -> None:
         self._conn.close()
